@@ -1,0 +1,427 @@
+---
+title: "SleepCycle Data Analysis Project"
+author: "Tinashe M. Tapera"
+output: 
+  html_notebook: 
+    toc: yes
+---
+# Introduction
+Sleep Cycle provides users with the ability to dump out and analyse the data they generate. I'm going to use this data to practice some of the data analysis methods I've learned and possibly understand more about my sleeping habits.
+
+```{r include = FALSE}
+rm(list = ls())
+library(tidyverse)
+library(RColorBrewer)
+library(knitr)
+library(nnet)
+```
+
+# The Dataset
+Reading in the data:
+```{r}
+df = read.csv("sleepdata.csv", sep = ";", stringsAsFactors = FALSE)
+df = as.data.frame(df)
+head(df)
+```
+
+Let's clean up each of the columns. There are a number of datetime columns, some factors, and a percentage column.
+
+```{r}
+df[,1:2] = lapply(df[,1:2], as.POSIXct)
+df$Sleep.quality = as.numeric(sub("%","", df$Sleep.quality))
+df$Wake.up = as.factor(df$Wake.up)
+```
+
+```{r}
+#a function to turn the time in bed from 
+#the hh:mm format to total minutes
+
+minuteParse = function(hhmm){
+  temp = hhmm
+  hours = as.numeric(strsplit(temp, split=":")[[1]][1])
+  mins = as.numeric(strsplit(temp, split=":")[[1]][2])
+  totalMins = (hours*60)+mins
+  return(totalMins)
+}
+
+df$Time.in.bed = sapply(df$Time.in.bed, minuteParse)
+```
+
+```{r}
+head(df)
+```
+
+
+Let's take a look at some of the data that we have.
+```{r}
+summary(df)
+ggplot(data=df)+
+  geom_histogram(aes(x = df$Sleep.quality))+
+  ggtitle("Sleep Quality")
+
+ggplot(data=df)+
+  geom_histogram(aes(x = df$Heart.rate), binwidth = 1)+
+  ggtitle("Heart rate")
+
+ggplot(data=df)+
+  geom_histogram(aes(x = df$Activity..steps.))+
+  ggtitle("Steps")
+
+ggplot(data=df)+
+  geom_histogram(aes(x = df$Time.in.bed), binwidth=20)+
+  ggtitle("Time in bed")
+
+plot(df$Wake.up, main = "Wake Up Mood")
+```
+
+There are a number of issues here. The first being that heart rate has over 1000 missing values. To be honest, I didn't record heart rate very often, so it might be best to delete this variable. Additionally, it's recorded *ex post facto*, meaning it's not a predictive variable
+
+```{r}
+df$Heart.rate = NULL
+```
+
+The second issue is that the steps variable is also zero inflated; Sleep Cycle only implemented this once the iPhone developed a steps tracker; which in and of itself may be quite inaccurate (as a phone stays in your pocket, not your wrist).
+
+```{r}
+ggplot(data=df)+
+  geom_point(aes(y = Activity..steps., x = Start))+
+  ggtitle("Time in bed")
+```
+
+One can't possibly attempt to impute so many values; it would probably be best to throw this variable out and revisit it when I've racked up some more data with my fitbit (as I will with heartrate too).
+
+```{r}
+df$Activity..steps. = NULL
+```
+
+
+Lastly, there's a class imbalance problem for the wake up mood. In my own opinion, it comes down to the fact that some days I'm actually too tired to even consider my own mood when I get up and have no time to think about it either. Let's check the ratio of the data in mood:
+
+```{r}
+mood = table(df$Wake.up)
+print(floor(mood/min(mood)))
+```
+
+So the data imbalance is 1:1:8. It's pretty difficult to work with classification problem when the data is so imbalanced in this way. It's worth a try regardless, because there are methods developed for working with imbalanced data.
+
+It's first necessary to parse the Sleep notes column; I'd like to create dummy variables for each, as that seems the most appropriate method for classification problems.
+
+```{r}
+exampleString = df$Sleep.Notes[809]
+exampleString
+#we can split a string and get each note in a list like so
+strsplit(exampleString, ":")
+
+#so lets work through each night's note and enumerate the notes we have
+getNotes = function(vec){
+  allNotes = as.vector(unlist(strsplit(vec, ":")))
+  return(unique(allNotes))
+}
+
+#create a df with each sleep note as a column
+allNotes = getNotes(df$Sleep.Notes)
+sleepNotes = data.frame(matrix(0,ncol = length(allNotes), nrow = dim(df)[1]))
+names(sleepNotes) = allNotes
+
+#now loop through the original data set and parse it as above,
+#but this time, if the temp list contains a string that 
+#matches a column, mark that row in that column
+
+makeNotes = function(dataframe,vec){
+  
+  for(i in 1:length(vec)){
+    temp = as.vector(unlist(strsplit(vec[i], ":")))
+    if(length(temp)>0){
+      for(j in 1:length(temp)){
+        hit = match(temp[j], names(dataframe))
+        dataframe[i,hit] = 1
+      }
+    }
+  }
+  return(dataframe)
+}
+
+sleepNotes = data.frame(makeNotes(sleepNotes,df$Sleep.Notes))
+apply(sleepNotes,2,table)
+df$Sleep.Notes = NULL
+df = bind_cols(df,sleepNotes)
+head(df)
+```
+
+# Setting Up the Problem
+
+I want to better understand my sleeping habits, and I think the best way to do this would be through understanding the variables that influence the wake up mood. So my initial thought was that I could try and predict wake up mood using multinomial logistic regression, however, this might be difficult due to the class imbalance problem. 
+
+Nevertheless, I'll attempt to fit a simple model and see how it performs. 
+
+# Examining the Variables
+
+First, visualising the data to use:
+
+```{r}
+#refactor wakeup mood
+df$Mood = as.numeric(df$Wake.up)
+df$Mood[which(df$Wake.up == "")] = NA
+df$Mood[which(df$Wake.up == ":|")] = 0
+df$Mood[which(df$Wake.up == ":(")] = -1
+df$Mood[which(df$Wake.up == ":)")] = 1
+```
+
+```{r}
+df2 = df[which(is.na(df$Mood) == FALSE),]
+ggplot(df2, aes(x = Start, y = Mood)) + geom_point() + xlab("Time") + scale_x_datetime() + ylab("Wake Up Mood")+
+  geom_smooth()+ggtitle("Mean Wake Up Mood Over the Years")
+df$Mood = NULL
+```
+
+From this plot, it appears as though my overall sleep quality decreased from 2012 to 2016, but recently began improving.
+
+```{r}
+ggplot(df2) + geom_text(aes(x = Time.in.bed, y = Sleep.quality, label = Wake.up, colour = Wake.up)) + xlab("Minutes of Sleep") + ylab("SleepQuality") + ggtitle("Sleep Quality & Amount of Sleep per Night")
+
+cor(df$Sleep.quality, df$Time.in.bed)
+```
+
+So it looks like minutes of sleep and sleep quality are strongly positively correlated (of course). This might be a problem in violating the assumptions of linear modeling.
+
+```{r}
+df = df[!(df$Wake.up == ""),]
+df$Wake.up = factor(df$Wake.up)
+summary(df[,1:5])
+```
+
+We can see the distributions of the continuous data below:
+
+```{r}
+boxplot(df$Sleep.quality, main = "Sleep Quality")
+boxplot(df$Time.in.bed, main = "Length of Sleep")
+```
+
+Notice that there are outliers for each of these variables. However, I don't want to lose too much data by deleting them. In fact, they are probably the points that we want the model to be sensitive to (after all, if every time I get 1 hour of sleep is the times that I have a bad mood, then the model should be sensitive to that). That being said, I'll only remove the rows where I got less than an hour of sleep (because that would technically be a nap and wouldn't require SleepCycle).
+
+```{r}
+df = df[!(df$Time.in.bed < 60),]
+nights = df[,1:2]
+df[,1:2] = NULL
+rownames(df) = nights$Start
+```
+
+```{r}
+boxplot(df$Sleep.quality, main = "Sleep Quality")
+boxplot(df$Time.in.bed, main = "Length of Sleep")
+```
+
+Nice.
+
+We can more closely examine the predictors in sleep notes:
+
+```{r}
+vars = NULL
+for(i in 4:17){
+  print(names(df)[i])
+  temp = df[,i]
+  ratio = as.vector(table(temp))
+  ratio = ((ratio[2]/ratio[1])*100)%>%
+    round(.,2)
+  paste(ratio,"%")%>%
+    print()
+  vars = rbind(vars,ratio)
+}
+
+vars = as.data.frame(vars)
+rownames(vars) = NULL
+vars$Variable = names(df)[4:17]
+vars = vars[order(-vars$V1),]
+
+ggplot(vars)+
+  geom_bar(aes(x = with(vars, reorder(Variable,V1)), y = V1, fill = Variable), stat = "identity")+
+  ylab("Percent of days with note")+
+  xlab("Note")+
+  coord_flip()+
+  ggtitle("Percent of Days with Sleep Notes Mentioned")
+```
+
+Simple visualisations show that over 40% of my days are regarded as long days (my equivalent to saying I wish I had had less to do).
+
+About 2% of the time, I indicate that it was a fun day. Not super encouraging.
+
+Something else that's worrying is that I mention unproductive days more frequently than productive days. Furthermore, I only exercised about 3% of these days too!
+
+And of course, taking a nap, lots of homework, and a little bit of TV before bed are always going to be present.
+
+You can clearly see where my priorities are at.
+
+But will a regression result mimic these observations?
+
+# Fitting a Multinomial Logistic Regression Model
+
+We'll fit a multinomial logistic regression model using the `nnet` package. The data set has dimensions `r dim(df)`, and spans nights from `r min(nights[,1])` to `r max(nights[,2])`.
+
+```{r}
+# we need to truly randomise the subset that we use for modeling.
+# because we are really violating the assumption of uncorrelated
+# observations since it is a linear dataset
+set.seed(1)
+ind = sample(1:dim(df)[1],0.6*dim(df)[1])
+binaryTrain = ifelse(1:dim(df)[1] %in% ind, 1,2)
+
+plot(df$Sleep.quality, df$Time.in.bed, col = binaryTrain+10, cex = 0.7, pch = as.numeric(df$Wake.up), main = "Verifying Random Sampling")
+
+train = df[ind,]
+
+model1 = multinom(Wake.up~., train)
+summary(model1)
+```
+
+## Interpretation
+This output says that, assuming that **:(** is the reference value, there are coefficients that would affect that probability of switching to either alternative. For example, given that the expected wake-up mood was **:(** that night, a one unit change in sleep quality gives a 0.033 average increase in log-odds of having a **:|** mood, and a 0.0029 average increase in log-odds of having a **:)** mood.
+
+In other words, taking the exponent of the coefficients, **the [relative odds](http://data.princeton.edu/wws509/stata/mlogit.html) of waking up in a better mood for each of the conditions are summarised by the following table:**
+
+```{r}
+coef(model1)%>%
+  exp()%>%
+  kable(., digits = 3, caption = "Relative Odds of Waking Up in a Better Mood")
+
+odds = coef(model1)%>%
+  exp()%>%
+  as.data.frame()%>%
+  t()
+
+odds = as.data.frame(odds)
+odds$Variable = as.vector(rownames(odds))
+odds = gather(odds,Mood,Odds, 1:2)
+
+ggplot(odds)+
+  geom_bar(aes(x = with(odds, reorder(Variable,Odds)), y = Odds, fill = Variable), stat = "identity")+
+  coord_flip()+
+  facet_wrap(~Mood)+
+  xlab("Sleep Note")+
+  ggtitle("Sleep Note's Odds of Increasing My Wake Up Mood")
+```
+
+
+We can also interpret the model coefficients using the Wald's *z*-test to find their significance at the 0.95 $\alpha$-level:
+
+```{r}
+# acknowledge:
+# http://stats.stackexchange.com/questions/63222/getting-p-values-for-multinom-in-r-nnet-package
+
+z = summary(model1)$coefficients/summary(model1)$standard.errors
+p = ((1 - pnorm(abs(z), 0, 1)) * 2) %>%
+  as.data.frame()
+p
+
+for(i in 1:length(p)){
+  temp = p[,i]
+  if(temp[2] < 0.05){
+    print(paste(names(p)[i],"is significant for :| mood:",round(temp[2],4)))
+  }
+  if(temp[1] < 0.05){
+    print(paste(names(p)[i],"is significant for :) mood:",round(temp[1],4)))
+  }
+}
+```
+
+The only predictors that were significant for my wake up mood in this model were stressful days (reduced probability), fun days (reduced probability), and whether or not the day was productive (reduced probability). I'm quite surprised by the directions of the coefficients in each case.
+
+## Making Predictions
+
+We can evaluate the model fit by predicting on the portion of the data that we left out.
+
+```{r}
+test = df[-ind,]
+yhat = predict(model1, newdata = test, type = "class")
+y = df[-ind,"Wake.up"]
+```
+
+The mean accuracy of this model is given by `r round(mean(yhat == y)*100)`%. This is good, but if you check the confusion matrix, you'll see a very different story:
+
+```{r}
+table(yhat,y)
+```
+
+As expected, the model made errors by predicting the vast majority of observations as the **:|** mood. By doing so, it has an 88% chance of being correct, since the data imbalance was 1:1:8.
+
+# Improving The Model By Adding Sampling Weights
+
+To remedy the data imbalance problem, a common method is to add weights to a model.
+
+According to [King (2001)](https://academic.oup.com/pan/article-abstract/9/2/137/1548158/Logistic-Regression-in-Rare-Events-Data?rss=1&ssource=mfc):
+
+> In rare events (such as fraud in credit risk, deaths in medical literature) we tend to sample all the 1’s (rare events) and a fraction of 0’s (non events). In such cases we have to weight the observations accordingly.
+Example: Let us say, In a population of 500,000 transactions there are 50 fraud transactions. 
+In this case you would sample all 50 frauds transaction (100% of the fraud) & 10% of the good transactions (10% of 500,000 is 5000 good transactions).
+In this case you would assign a weight of 1 for fraud transactions and a weight of 10 for good transactions. This is called the Weighted Maximum Likelihood method. The important takeaway is that the weighting is related to sampling proportions
+
+In this case, then we should sample ALL of the minority classes in the training set, weight them as 1, and sample 10% of the majority class, weighting it as 10.
+
+```{r}
+n = 10
+train = df[ind,]
+
+# 100% of minority groups in training set
+minor = which(train$Wake.up != ":|") 
+minor_weight = rep(1,length(minor))
+
+# n% of the majority class
+major = which(train$Wake.up == ":|")
+set.seed(1)
+major = sample(major,length(major)/n) 
+major_weight = rep(n,length(major))
+
+wt = c(minor_weight,major_weight)
+train = df[c(minor,major),]
+```
+
+Now we fit the model as normal, incorporating the weights vector.
+
+```{r}
+model2 = multinom(Wake.up~., train, weights = wt)
+summary(model2)
+```
+
+And predict:
+
+```{r}
+test = df[-ind,]
+yhat = predict(model2, newdata = test, type = "class")
+y = df[-ind,"Wake.up"]
+
+table(yhat,y)
+round(mean(yhat == y)*100)
+```
+
+This didn't improve the model; We can see that in the confusion matrix, the model didn't overfit as badly and varied more. But it still didn't improve its accuracy, so either the weights are badly selected, or, this is a particularly complex problem to tackle.
+
+# Summary
+
+* SleepCycle outputs a relatively easy data frame to work with, with relatively granular data. The data ranges from late 2011 to present, and is a number of nights as individual observations, each with measures of sleep quality, wake up mood, heart rate and activity for the previous day, and sleep notes that the user specifies.
+
+* I've had a range of sleep qualities, average of 58%.
+
+* I've had wake up moods that are majoratively moderate, with some happy and some bad. The ratio for these is 8:1:1.
+
+* As SleepCycle has included new features, the data has become more complex, meaning that we have to limit what we can work with ultimately. Unfortunately, this means losing a large number of observations.
+
+* Outlier nights that needed to be removed were those that I used SleepCycle for a nap where I shouldn't have.
+
+* According to the frequencies of sleep notes, the most important note on my day is that it was "Long". The least important is that it was "Fun".
+
+* Using the `nnet` package, we can fit a multinomial logistic regression model to predict my wake up mood for each night. This model gave us coefficients which can be used to tell us the odds of waking up with a greater-than-bad mood.
+
+* The only significant predictors of this approach were the intercept, stressful day, productive day, and fun day. This is counterintuitive to the fact that fun day is the least mentioned sleep note, while productive day is mentioned somewhere in the middle, about 21% of the time. Stressful days are mentioned even less.
+
+* When I used this model to try and predict a test set, I was only able to achieve 75% overall prediction accuracy. 
+
+* I attempted to tune the model by weighting the minority class to compensate for the imbalance. This did not improve the prediction accuracy. However, the AIC for the model did decrease in the weighted model.
+
+# Future Improvements
+
+The first problem is quite obvious; this modeling technique ignores the basic principle that observations shouldn't be correlated for logistic regression. A more appropriate model would be one that incorporates longitudinal data analysis methods such as growth curve modeling.
+
+A second issue is that two variables we used were extremely collinear. Whether this violation caused the downfall of the model is up to question.
+
+According to [Machine Learning Mastery](http://machinelearningmastery.com/tactics-to-combat-imbalanced-classes-in-your-machine-learning-dataset/), one approach to this problem is to change approaches completely. In this case, it might be wise to investigate [change detection](https://en.wikipedia.org/wiki/Change_detection), a statistical learning problem where the goal is to identify when the probability distribution of a time series is going to change significantly.
+
+This might be appropriate for this data set because Sleep Cycle has provided all the dates for each measurement; also, it is fitting because on most mornings my mood is within a very wide range that I consider :|, and in order for me to put in a :) or :(, something pretty significant must have happened to my mood. Detecting and predicting this change would be a useful insight for myself as I could better modulate my mood and perhaps even respond to it early by sending myself a pick me up early in the morning.
