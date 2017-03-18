@@ -235,10 +235,10 @@ vars = vars[order(-vars$V1),]
 
 ggplot(vars)+
   geom_bar(aes(x = with(vars, reorder(Variable,V1)), y = V1, fill = Variable), stat = "identity")+
-  ylab("Percent of days with note")+
+  ylab("Percentage")+
   xlab("Note")+
   coord_flip()+
-  ggtitle("Percent of Days with Sleep Notes Mentioned")
+  ggtitle("Relative Frequencies of Sleep Notes Mentioned")
 ```
 
 Simple visualisations show that over 40% of my days are regarded as long days (my equivalent to saying I wish I had had less to do).
